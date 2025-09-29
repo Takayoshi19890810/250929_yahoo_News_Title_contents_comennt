@@ -13,10 +13,15 @@ from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 import requests
 
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+
 # --- 設定項目 ---
 KEYWORD = "日産"
 EXCEL_FILE = "yahoo_news_analysis.xlsx"
-AI_MODEL_NAME = "gemini-1.5-pro-latest" # 高精度向け or "gemini-1.5-flash-latest" 安定運用向け
+AI_MODEL_NAME = "gemini-1.0-pro"
 
 MAX_BODY_PAGES = 10
 MAX_COMMENT_PAGES = 10
@@ -43,6 +48,7 @@ def format_datetime_str(dt_obj):
     return dt_obj.strftime("%Y/%m/%d %H:%M")
 
 def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
+    # (変更なし)
     print("--- Yahoo!ニュースのスクレイピングを開始 ---")
     options = Options()
     options.add_argument("--headless")
@@ -91,6 +97,7 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
     return articles_data
 
 def fetch_article_pages(base_url: str) -> list[str]:
+    # (変更なし)
     body_pages = []
     for page in range(1, MAX_BODY_PAGES + 1):
         url = base_url if page == 1 else f"{base_url}?page={page}"
@@ -115,30 +122,61 @@ def fetch_article_pages(base_url: str) -> list[str]:
             break
     return body_pages
 
+### 修正: main2.pyを参考に、コメント取得ロジックを全面的に強化 ###
 def fetch_comments_with_selenium(base_url: str) -> tuple[int, list[str]]:
+    """記事のコメントをページごとに取得し、(総コメント数, [ページごとのコメントリスト])を返す"""
     total_comments = []
     per_page_comments_text = []
 
     if "/articles/" not in base_url:
         return 0, []
 
-    comment_base_url = base_url.split("/articles/")[0] + "/comments/" + base_url.split("/articles/")[1]
+    article_id = base_url.split("/articles/")[-1]
+    comment_base_url = f"https://news.yahoo.co.jp/articles/{article_id}/comments"
     
     options = Options()
-    options.add_argument("--headless")
+    options.add_argument("--headless=new") # 最新のヘッドレスモードを指定
     options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
     try:
         for page in range(1, MAX_COMMENT_PAGES + 1):
             comment_page_url = f"{comment_base_url}?page={page}"
             driver.get(comment_page_url)
-            time.sleep(2)
+
+            try:
+                # コメントリストが表示されるまで最大10秒待機
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "ul[class*='comments-list']"))
+                )
+            except TimeoutException:
+                if page == 1:
+                    print("  - コメントが見つかりませんでした（タイムアウト）。")
+                break
+
             soup = BeautifulSoup(driver.page_source, "html.parser")
             
-            comment_tags = soup.select("p[class*='comment']")
-            current_page_comments = [tag.get_text(strip=True) for tag in comment_tags if tag.get_text(strip=True)]
+            # main2.pyを参考にした、より堅牢なセレクタ群
+            selectors = [
+                "p.sc-169yn8p-10",
+                "p[data-ylk*='cm_body']",
+                "p[class*='comment']",
+                "div[data-testid='comment-body-text']", # 最近の構造
+                "div.commentBody, p.commentBody",
+                "div[data-ylk*='cm_body']"
+            ]
             
+            p_candidates = []
+            for sel in selectors:
+                p_candidates.extend(soup.select(sel))
+
+            current_page_comments = [p.get_text(strip=True) for p in p_candidates if p.get_text(strip=True)]
+            # 重複を除去
+            current_page_comments = list(dict.fromkeys(current_page_comments))
+
             if not current_page_comments:
                 break
 
@@ -148,16 +186,14 @@ def fetch_comments_with_selenium(base_url: str) -> tuple[int, list[str]]:
             if len(total_comments) >= MAX_TOTAL_COMMENTS:
                 break
     except Exception as e:
-        print(f"  - コメント取得中にエラー: {e}")
+        print(f"  - コメント取得中に予期せぬエラー: {e}")
     finally:
         driver.quit()
         
     return len(total_comments), per_page_comments_text
 
-### 修正 ###
-# f-stringの構文エラーを修正した関数
 def analyze_article_with_ai(title: str, body_text: str) -> dict:
-    """タイトルと本文を一度に分析し、結果を単一の辞書で返す"""
+    # (変更なし)
     default_response = {
         "title_sentiment": "N/A", "title_category": "N/A",
         "body_sentiment": "N/A", "body_category": "N/A"
@@ -168,10 +204,8 @@ def analyze_article_with_ai(title: str, body_text: str) -> dict:
 
     analyze_body = bool(body_text and isinstance(body_text, str) and len(body_text.strip()) >= 10)
 
-    # f-stringのエラーを避けるため、プロンプトの部品を事前に作成
     optional_keys_string = ""
     if analyze_body:
-        # \ を含まないように、シングルクォートで文字列を定義
         optional_keys_string = '\n- "body_sentiment"\n- "body_category"'
 
     prompt = f"""
@@ -211,6 +245,7 @@ def analyze_article_with_ai(title: str, body_text: str) -> dict:
         return default_response
 
 def main():
+    # (変更なし)
     print("--- プログラム開始 ---")
     
     try:
