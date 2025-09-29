@@ -8,6 +8,9 @@ from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 
@@ -33,21 +36,32 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
     articles_data = []
     try:
         driver.get(search_url)
-        time.sleep(5)  # ページ読み込み待機
+        
+        # ▼▼▼ 変更点1: 待機する要素を新しい構造に合わせる ▼▼▼
+        # "news-list" というIDを持つ要素を探すように変更
+        wait = WebDriverWait(driver, 20)
+        wait.until(EC.presence_of_element_located((By.ID, "news-list")))
+        
+        with open('debug_page.html', 'w', encoding='utf-8') as f:
+            f.write(driver.page_source)
+        print("💡 デバッグ用のHTMLファイル 'debug_page.html' を保存しました。")
 
         soup = BeautifulSoup(driver.page_source, "html.parser")
         
-        list_container = soup.find('ul', class_=re.compile(r"SearchList_"))
+        # ▼▼▼ 変更点2: 記事リストの親要素を新しいIDセレクタに変更 ▼▼▼
+        list_container = soup.find(id="news-list")
         
         if not list_container:
-            print("❌ 記事リストが見つかりませんでした。サイト構造が変更された可能性があります。")
+            print("❌ 記事リストが見つかりませんでした。")
             return []
 
-        articles = list_container.find_all('li', class_=re.compile(r"SearchList_item"))
+        # ▼▼▼ 変更点3: 記事ひとつひとつのセレクタも全面的に見直し ▼▼▼
+        # `div`タグの`news-list__item`というクラスを持つ要素を探す
+        articles = list_container.find_all('div', class_=re.compile(r"news-list__item"))
 
         for article in articles:
             try:
-                title_tag = article.find("p", class_=re.compile(r"SearchList_title"))
+                title_tag = article.find('h2', class_=re.compile(r"news-list__title"))
                 title = title_tag.text.strip() if title_tag else ""
 
                 link_tag = article.find("a", href=True)
@@ -56,7 +70,7 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
                 time_tag = article.find("time")
                 date_str = time_tag.text.strip() if time_tag else "取得不可"
                 
-                source_tag = article.find("p", class_=re.compile(r"SearchList_provider"))
+                source_tag = article.find('span', class_=re.compile(r"news-list__provider"))
                 source_text = source_tag.text.strip() if source_tag else "取得不可"
 
                 if title and url:
@@ -79,11 +93,6 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
 
 
 def write_to_excel(articles: list[dict], filename: str):
-    """
-    記事リストをExcelファイルに書き込む。
-    - 既存ファイルがあれば新しい記事のみを追記する。
-    - 既存ファイルがなく記事もない場合、ヘッダーのみのファイルを作成する。
-    """
     new_df = pd.DataFrame(articles)
     file_path = Path(filename)
 
@@ -105,11 +114,9 @@ def write_to_excel(articles: list[dict], filename: str):
         print(f"➕ {len(new_articles_df)}件の新しい記事を追記します。")
         combined_df = pd.concat([existing_df, new_articles_df], ignore_index=True)
     else:
-        # ファイルが存在せず、新しい記事もない場合
         if new_df.empty:
             print(f"📄 記事が見つかりませんでしたが、ヘッダーのみの新規ファイル '{filename}' を作成します。")
             combined_df = pd.DataFrame(columns=['タイトル', 'URL', '投稿日', '引用元'])
-        # ファイルが存在せず、新しい記事がある場合
         else:
             print(f"📄 新規ファイル '{filename}' を作成します。")
             combined_df = new_df
@@ -123,5 +130,4 @@ def write_to_excel(articles: list[dict], filename: str):
 
 if __name__ == "__main__":
     yahoo_news_articles = get_yahoo_news_with_selenium(KEYWORD)
-    # 取得件数に関わらず、常に書き込み関数を呼び出す
     write_to_excel(yahoo_news_articles, EXCEL_FILENAME)
