@@ -1,7 +1,0 @@
-selenium
-webdriver_manager
-requests
-beautifulsoup4
-pandas
-openpyxl
-google-generativeai
