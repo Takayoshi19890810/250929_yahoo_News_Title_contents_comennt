@@ -1,7 +1,7 @@
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 from pathlib import Path
 
@@ -58,14 +58,11 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
             date_str = time_tag.text.strip() if time_tag else ""
             formatted_date = "取得不可"
             if date_str:
-                # "（月）"などの曜日表記を削除
                 date_str_no_day = re.sub(r'\s*\（[月火水木金土日]\）', '', date_str)
                 try:
-                    # 'M/D HH:mm'形式をパース
                     dt_obj = datetime.strptime(f"{datetime.now().year}/{date_str_no_day}", "%Y/%m/%d %H:%M")
                     formatted_date = format_datetime(dt_obj)
                 except ValueError:
-                    # パース失敗時は元の文字列をそのまま利用
                     formatted_date = date_str
 
             source_tag = article.find("p", class_=re.compile(r"SearchList_provider"))
@@ -87,52 +84,51 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
 
 def write_to_excel(articles: list[dict], filename: str):
     """
-    記事リストをExcelファイルに書き込む。既存ファイルがあれば新しい記事のみを追記する。
+    記事リストをExcelファイルに書き込む。
+    - 既存ファイルがあれば新しい記事のみを追記する。
+    - 既存ファイルがなく記事もない場合、ヘッダーのみのファイルを作成する。
     """
-    if not articles:
-        print("⚠️ 追記する新しい記事はありません。")
-        return
-
-    # 新しく取得したデータをDataFrameに変換
     new_df = pd.DataFrame(articles)
-    
-    # 日付文字列をdatetimeオブジェクトに変換（変換できないものはNaT）
-    new_df['投稿日時'] = pd.to_datetime(new_df['投稿日'], format='%Y/%m/%d %H:%M', errors='coerce')
-
     excel_file = Path(filename)
+    
+    # 既存のExcelファイルがある場合
     if excel_file.exists():
         print(f"📖 既存ファイル '{filename}' を読み込んでいます...")
-        try:
-            existing_df = pd.read_excel(excel_file)
-            existing_urls = set(existing_df['URL'])
-
-            # 既存リストにないURLの記事のみをフィルタリング
-            new_articles_df = new_df[~new_df['URL'].isin(existing_urls)].copy()
+        existing_df = pd.read_excel(excel_file)
+        
+        # 新しい記事がない場合はここで処理を終了
+        if new_df.empty:
+            print("✅ 新しい記事はありませんでした。ファイルは更新されません。")
+            return
             
-            if new_articles_df.empty:
-                print("✅ 新しい記事はありませんでした。ファイルは更新されません。")
-                return
+        existing_urls = set(existing_df['URL'])
+        new_articles_df = new_df[~new_df['URL'].isin(existing_urls)]
 
-            print(f"➕ {len(new_articles_df)}件の新しい記事を追記します。")
+        if new_articles_df.empty:
+            print("✅ 新しい記事はありませんでした。ファイルは更新されません。")
+            return
             
-            # 既存のDataFrameと新しい記事のDataFrameを結合
-            combined_df = pd.concat([existing_df, new_articles_df], ignore_index=True)
-            # 日付列も同様に変換
-            combined_df['投稿日時'] = pd.to_datetime(combined_df['投稿日'], format='%Y/%m/%d %H:%M', errors='coerce')
+        print(f"➕ {len(new_articles_df)}件の新しい記事を追記します。")
+        combined_df = pd.concat([existing_df, new_articles_df], ignore_index=True)
 
-        except Exception as e:
-            print(f"⚠️ Excelファイルの読み込みに失敗しました: {e}。ファイルを上書きします。")
-            combined_df = new_df
-
+    # 既存のExcelファイルがない場合
     else:
-        print(f"📄 新規ファイル '{filename}' を作成します。")
-        combined_df = new_df
-
-    # 投稿日時で降順にソート（NaTは末尾へ）
-    combined_df.sort_values(by='投稿日時', ascending=False, inplace=True, na_position='last')
-    
-    # 一時的な日時列を削除
-    final_df = combined_df.drop(columns=['投稿日時'])
+        # 新しく取得した記事もない場合、ヘッダーだけの空のDataFrameを作成
+        if new_df.empty:
+            print(f"📄 記事が見つかりませんでしたが、ヘッダーのみの新規ファイル '{filename}' を作成します。")
+            combined_df = pd.DataFrame(columns=['タイトル', 'URL', '投稿日', '引用元'])
+        # 新しく取得した記事がある場合、それがそのまま最初のデータとなる
+        else:
+            print(f"📄 新規ファイル '{filename}' を作成します。")
+            combined_df = new_df
+            
+    # データが存在する場合のみソート処理を行う
+    if not combined_df.empty and '投稿日' in combined_df.columns:
+        combined_df['投稿日時'] = pd.to_datetime(combined_df['投稿日'], format='%Y/%m/%d %H:%M', errors='coerce')
+        combined_df.sort_values(by='投稿日時', ascending=False, inplace=True, na_position='last')
+        final_df = combined_df.drop(columns=['投稿日時'])
+    else:
+        final_df = combined_df
 
     # Excelファイルに書き出し
     try:
@@ -141,8 +137,7 @@ def write_to_excel(articles: list[dict], filename: str):
     except Exception as e:
         print(f"❌ Excelファイルへの書き込み中にエラーが発生しました: {e}")
 
-
 if __name__ == "__main__":
     yahoo_news_articles = get_yahoo_news_with_selenium(KEYWORD)
-    if yahoo_news_articles:
-        write_to_excel(yahoo_news_articles, EXCEL_FILENAME)
+    # 取得した記事リストを常にwrite_to_excel関数に渡す
+    write_to_excel(yahoo_news_articles, EXCEL_FILENAME)
