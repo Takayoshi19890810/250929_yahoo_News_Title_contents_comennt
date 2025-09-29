@@ -37,7 +37,6 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
 
         soup = BeautifulSoup(driver.page_source, "html.parser")
         
-        # 記事がリストされている親要素を取得
         list_container = soup.find('ul', class_=re.compile(r"SearchList_"))
         
         if not list_container:
@@ -68,7 +67,7 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
                         "引用元": source_text
                     })
             except Exception:
-                continue # 個別の記事でエラーが起きても処理を続ける
+                continue
 
     except Exception as e:
         print(f"❌ スクレイピング中にエラーが発生しました: {e}")
@@ -81,21 +80,22 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
 
 def write_to_excel(articles: list[dict], filename: str):
     """
-    記事リストをExcelファイルに書き込む。既存ファイルがあれば新しい記事のみを追記する。
+    記事リストをExcelファイルに書き込む。
+    - 既存ファイルがあれば新しい記事のみを追記する。
+    - 既存ファイルがなく記事もない場合、ヘッダーのみのファイルを作成する。
     """
-    if not articles:
-        print("⚠️ 新しい記事はありません。")
-        return
-
     new_df = pd.DataFrame(articles)
     file_path = Path(filename)
 
     if file_path.exists():
         print(f"📖 既存ファイル '{filename}' を読み込みます...")
         existing_df = pd.read_excel(file_path)
-        existing_urls = set(existing_df['URL'])
         
-        # 既存リストにないURLの記事のみをフィルタリング
+        if new_df.empty:
+            print("✅ 新しい記事はありませんでした。ファイルは更新されません。")
+            return
+            
+        existing_urls = set(existing_df['URL'])
         new_articles_df = new_df[~new_df['URL'].isin(existing_urls)]
         
         if new_articles_df.empty:
@@ -105,10 +105,15 @@ def write_to_excel(articles: list[dict], filename: str):
         print(f"➕ {len(new_articles_df)}件の新しい記事を追記します。")
         combined_df = pd.concat([existing_df, new_articles_df], ignore_index=True)
     else:
-        print(f"📄 新規ファイル '{filename}' を作成します。")
-        combined_df = new_df
+        # ファイルが存在せず、新しい記事もない場合
+        if new_df.empty:
+            print(f"📄 記事が見つかりませんでしたが、ヘッダーのみの新規ファイル '{filename}' を作成します。")
+            combined_df = pd.DataFrame(columns=['タイトル', 'URL', '投稿日', '引用元'])
+        # ファイルが存在せず、新しい記事がある場合
+        else:
+            print(f"📄 新規ファイル '{filename}' を作成します。")
+            combined_df = new_df
 
-    # 重複を最終確認して削除し、投稿日でソート（日付らしき文字列でソートを試みる）
     combined_df = combined_df.drop_duplicates(subset=['URL'], keep='last')
     combined_df = combined_df.sort_values(by='投稿日', ascending=False)
 
@@ -118,6 +123,5 @@ def write_to_excel(articles: list[dict], filename: str):
 
 if __name__ == "__main__":
     yahoo_news_articles = get_yahoo_news_with_selenium(KEYWORD)
-    # 記事が1件以上あれば書き込み処理を実行
-    if yahoo_news_articles:
-        write_to_excel(yahoo_news_articles, EXCEL_FILENAME)
+    # 取得件数に関わらず、常に書き込み関数を呼び出す
+    write_to_excel(yahoo_news_articles, EXCEL_FILENAME)
