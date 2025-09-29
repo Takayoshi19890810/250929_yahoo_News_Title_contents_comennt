@@ -2,7 +2,7 @@ name: Run Yahoo News Scraper and Commit Excel
 
 on:
   schedule:
-    # JSTの毎時0分に実行
+    # JSTで毎時0分（1時間おき）
     - cron: '0 * * * *'
   workflow_dispatch:
 
@@ -18,7 +18,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Python 3.9
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.9'
@@ -36,8 +36,8 @@ jobs:
       run: |
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-        git add nissan_yahoo_news.xlsx
-        # git diff-index --quiet HEAD は変更があった場合のみコミットするためのコマンド
+        git add yahoo_news_articles.xlsx
+        # 変更があった場合のみコミットする
         if ! git diff-index --quiet HEAD; then
           git commit -m "Update Yahoo news articles"
           git push
