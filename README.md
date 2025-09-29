@@ -1,0 +1,2 @@
+# 250929_yahoo_News_Title_contents_comennt
+ヤフーニュースのタイトル、本文、コメント抽出および判定ツール
