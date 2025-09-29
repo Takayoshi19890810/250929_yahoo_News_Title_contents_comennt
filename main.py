@@ -154,11 +154,10 @@ def fetch_comments_with_selenium(base_url: str) -> tuple[int, list[str]]:
         
     return len(total_comments), per_page_comments_text
 
-### 変更点 ###
-# タイトルと本文をまとめて1回で分析する関数に変更
+### 修正 ###
+# f-stringの構文エラーを修正した関数
 def analyze_article_with_ai(title: str, body_text: str) -> dict:
     """タイトルと本文を一度に分析し、結果を単一の辞書で返す"""
-    # デフォルトの戻り値
     default_response = {
         "title_sentiment": "N/A", "title_category": "N/A",
         "body_sentiment": "N/A", "body_category": "N/A"
@@ -167,8 +166,13 @@ def analyze_article_with_ai(title: str, body_text: str) -> dict:
     if not AI_ENABLED or not title:
         return default_response
 
-    # 本文がない場合は、本文に関する分析キーをプロンプトに含めない
     analyze_body = bool(body_text and isinstance(body_text, str) and len(body_text.strip()) >= 10)
+
+    # f-stringのエラーを避けるため、プロンプトの部品を事前に作成
+    optional_keys_string = ""
+    if analyze_body:
+        # \ を含まないように、シングルクォートで文字列を定義
+        optional_keys_string = '\n- "body_sentiment"\n- "body_category"'
 
     prompt = f"""
     以下のニュース記事の「タイトル」と「本文」を分析し、結果を単一のJSON形式で返してください。
@@ -187,9 +191,7 @@ def analyze_article_with_ai(title: str, body_text: str) -> dict:
 
     JSONのキーは以下のように指定してください:
     - "title_sentiment"
-    - "title_category"
-    {"- \"body_sentiment\"" if analyze_body else ""}
-    {"- \"body_category\"" if analyze_body else ""}
+    - "title_category"{optional_keys_string}
 
     JSON出力のみ記述してください:
     """
@@ -198,7 +200,6 @@ def analyze_article_with_ai(title: str, body_text: str) -> dict:
         json_str = response.text.strip().replace("```json", "").replace("```", "")
         analysis_result = json.loads(json_str)
 
-        # 本文を分析しなかった場合に備えて、キーが存在しない場合はデフォルト値を入れる
         return {
             "title_sentiment": analysis_result.get("title_sentiment", "N/A"),
             "title_category": analysis_result.get("title_category", "N/A"),
@@ -207,7 +208,6 @@ def analyze_article_with_ai(title: str, body_text: str) -> dict:
         }
     except Exception as e:
         print(f"  - AI分析エラー: {e}")
-        # エラー時は空の辞書を返さず、デフォルト値を持つ辞書を返す
         return default_response
 
 def main():
@@ -242,8 +242,6 @@ def main():
         comments_count, comment_pages = fetch_comments_with_selenium(article['URL'])
         print(f"  - 合計 {comments_count} 件のコメントを {len(comment_pages)} ページ分取得しました。")
 
-        ### 変更点 ###
-        # 1回のAPI呼び出しでタイトルと本文をまとめて分析
         print("  - AIによる分析を実行中 (API消費量最適化版)...")
         first_page_body = body_pages[0] if body_pages else ""
         analysis = analyze_article_with_ai(article['タイトル'], first_page_body)
@@ -267,7 +265,6 @@ def main():
             new_article_dict[f'閲覧者コメント({idx+1}ページ目)'] = page_content
             
         new_articles_data.append(new_article_dict)
-        # APIの連続アクセスを避けるための待機は、ループの最後に1回で十分
         time.sleep(1)
 
     if new_articles_data:
