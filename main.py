@@ -3,7 +3,7 @@ import json
 import time
 import re
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import google.generativeai as genai
 
 from selenium import webdriver
@@ -14,10 +14,13 @@ from bs4 import BeautifulSoup
 import requests
 
 # --- 設定項目 ---
-KEYWORD = "日産"  # 検索したいキーワード
-EXCEL_FILE = "yahoo_news_analysis.xlsx"  # 保存するExcelファイル名
-MAX_BODY_PAGES = 5  # 記事本文の最大取得ページ数
-MAX_TOTAL_COMMENTS = 100 # 取得するコメントの最大数（負荷軽減のため）
+KEYWORD = "日産"
+EXCEL_FILE = "yahoo_news_analysis.xlsx"
+AI_MODEL_NAME = "gemini-1.5-pro-latest" # 高精度向け or "gemini-1.5-flash-latest" 安定運用向け
+
+MAX_BODY_PAGES = 10
+MAX_COMMENT_PAGES = 10
+MAX_TOTAL_COMMENTS = 500
 
 
 # --- AI分析の設定 ---
@@ -28,20 +31,18 @@ try:
         AI_ENABLED = False
     else:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel(AI_MODEL_NAME)
         AI_ENABLED = True
 except Exception as e:
     print(f"AIモデルの初期化に失敗しました: {e}")
     AI_ENABLED = False
 
-# --- 共通関数 (main1.py, main2.pyより引用・改変) ---
+# --- 共通関数 ---
 
 def format_datetime_str(dt_obj):
-    """datetimeオブジェクトを 'yyyy/mm/dd hh:mm' 形式の文字列に変換"""
     return dt_obj.strftime("%Y/%m/%d %H:%M")
 
 def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
-    """Yahooニュースから記事の基本情報リストを取得する"""
     print("--- Yahoo!ニュースのスクレイピングを開始 ---")
     options = Options()
     options.add_argument("--headless")
@@ -53,7 +54,7 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
     try:
         search_url = f"https://news.yahoo.co.jp/search?p={keyword}&ei=utf-8"
         driver.get(search_url)
-        time.sleep(3) # ページ読み込み待機
+        time.sleep(3)
 
         soup = BeautifulSoup(driver.page_source, "html.parser")
         articles = soup.find_all("li", class_=re.compile("sc-1u4589e-0"))
@@ -72,14 +73,12 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
             date_str = time_tag.text.strip()
             source = source_tag_outer.text.strip()
             
-            # 日時フォーマットを統一
             try:
-                # "2024/9/29(月) 16:35" のような形式をパース
                 cleaned_date_str = re.sub(r'\([月火水木金土日]\)', '', date_str)
                 dt_obj = datetime.strptime(cleaned_date_str, "%Y/%m/%d %H:%M")
                 formatted_date = format_datetime_str(dt_obj)
             except ValueError:
-                formatted_date = date_str # パース失敗時は元の文字列を保持
+                formatted_date = date_str
 
             if title and url:
                 articles_data.append({
@@ -91,9 +90,8 @@ def get_yahoo_news_with_selenium(keyword: str) -> list[dict]:
     print(f"✅ Yahoo!ニュースから {len(articles_data)} 件の記事情報を取得しました。")
     return articles_data
 
-def fetch_article_pages(base_url: str) -> str:
-    """記事のURLから本文を取得する"""
-    full_text = []
+def fetch_article_pages(base_url: str) -> list[str]:
+    body_pages = []
     for page in range(1, MAX_BODY_PAGES + 1):
         url = base_url if page == 1 else f"{base_url}?page={page}"
         try:
@@ -101,30 +99,30 @@ def fetch_article_pages(base_url: str) -> str:
             res.raise_for_status()
             soup = BeautifulSoup(res.text, "html.parser")
             
-            # 本文が含まれていそうな領域を探す
             article_body = soup.find("div", class_=re.compile("article_body"))
             if not article_body:
+                if page > 1: break
                 continue
 
-            # pタグのテキストを抽出・結合
             page_text = "\n".join(p.get_text(strip=True) for p in article_body.find_all("p"))
             
-            if not page_text or (full_text and page_text == full_text[-1]):
-                break # ページが空か、前のページと同じ内容なら終了
+            if not page_text or (body_pages and page_text == body_pages[-1]):
+                break
             
-            full_text.append(page_text)
-            time.sleep(1) # サーバー負荷軽減
+            body_pages.append(page_text)
+            time.sleep(1)
         except requests.RequestException:
             break
-    return "\n\n".join(full_text)
+    return body_pages
 
-def fetch_comments_with_selenium(base_url: str) -> list[str]:
-    """記事のコメントを取得する"""
-    comments = []
+def fetch_comments_with_selenium(base_url: str) -> tuple[int, list[str]]:
+    total_comments = []
+    per_page_comments_text = []
+
     if "/articles/" not in base_url:
-        return comments
+        return 0, []
 
-    comment_url = base_url.split("/articles/")[0] + "/comments/" + base_url.split("/articles/")[1]
+    comment_base_url = base_url.split("/articles/")[0] + "/comments/" + base_url.split("/articles/")[1]
     
     options = Options()
     options.add_argument("--headless")
@@ -132,57 +130,89 @@ def fetch_comments_with_selenium(base_url: str) -> list[str]:
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
     try:
-        driver.get(comment_url)
-        time.sleep(3)
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        
-        # コメントのテキスト部分を抽出
-        comment_tags = soup.select("p[class*='comment']")
-        comments = [tag.get_text(strip=True) for tag in comment_tags if tag.get_text(strip=True)]
-        
-        # 上限数で切り捨て
-        comments = comments[:MAX_TOTAL_COMMENTS]
+        for page in range(1, MAX_COMMENT_PAGES + 1):
+            comment_page_url = f"{comment_base_url}?page={page}"
+            driver.get(comment_page_url)
+            time.sleep(2)
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+            
+            comment_tags = soup.select("p[class*='comment']")
+            current_page_comments = [tag.get_text(strip=True) for tag in comment_tags if tag.get_text(strip=True)]
+            
+            if not current_page_comments:
+                break
+
+            total_comments.extend(current_page_comments)
+            per_page_comments_text.append("\n---\n".join(current_page_comments))
+
+            if len(total_comments) >= MAX_TOTAL_COMMENTS:
+                break
     except Exception as e:
         print(f"  - コメント取得中にエラー: {e}")
     finally:
         driver.quit()
         
-    return comments
+    return len(total_comments), per_page_comments_text
 
-def analyze_text_with_ai(text: str) -> dict:
-    """AIを使ってテキストの感情とカテゴリを分析する"""
-    if not AI_ENABLED or not text or not isinstance(text, str) or len(text.strip()) < 10:
-        return {"sentiment": "N/A", "category": "N/A"}
+### 変更点 ###
+# タイトルと本文をまとめて1回で分析する関数に変更
+def analyze_article_with_ai(title: str, body_text: str) -> dict:
+    """タイトルと本文を一度に分析し、結果を単一の辞書で返す"""
+    # デフォルトの戻り値
+    default_response = {
+        "title_sentiment": "N/A", "title_category": "N/A",
+        "body_sentiment": "N/A", "body_category": "N/A"
+    }
+
+    if not AI_ENABLED or not title:
+        return default_response
+
+    # 本文がない場合は、本文に関する分析キーをプロンプトに含めない
+    analyze_body = bool(body_text and isinstance(body_text, str) and len(body_text.strip()) >= 10)
 
     prompt = f"""
-    以下のニュース記事のテキストを分析し、結果をJSON形式で返してください。
+    以下のニュース記事の「タイトル」と「本文」を分析し、結果を単一のJSON形式で返してください。
 
     分析項目:
     1. sentiment: 全体の論調が「ポジティブ」「ネガティブ」「ニュートラル」のいずれか。
     2. category: 内容に最も合致するカテゴリを以下から1つ選択してください。
        ["新技術・研究開発", "経営・財務", "販売・マーケティング", "生産・品質", "人事・労務", "不祥事・訴訟", "その他"]
 
-    テキスト:
+    分析対象:
     ---
-    {text[:2000]} # テキストが長すぎる場合を考慮して先頭2000文字に制限
+    タイトル: {title}
     ---
-    
+    本文: {body_text[:2000] if analyze_body else "（本文なし）"}
+    ---
+
+    JSONのキーは以下のように指定してください:
+    - "title_sentiment"
+    - "title_category"
+    {"- \"body_sentiment\"" if analyze_body else ""}
+    {"- \"body_category\"" if analyze_body else ""}
+
     JSON出力のみ記述してください:
     """
     try:
-        response = model.generate_content(prompt)
-        # レスポンスからJSON部分を抽出してパース
+        response = genai.GenerativeModel(AI_MODEL_NAME).generate_content(prompt)
         json_str = response.text.strip().replace("```json", "").replace("```", "")
-        return json.loads(json_str)
+        analysis_result = json.loads(json_str)
+
+        # 本文を分析しなかった場合に備えて、キーが存在しない場合はデフォルト値を入れる
+        return {
+            "title_sentiment": analysis_result.get("title_sentiment", "N/A"),
+            "title_category": analysis_result.get("title_category", "N/A"),
+            "body_sentiment": analysis_result.get("body_sentiment", "N/A"),
+            "body_category": analysis_result.get("body_category", "N/A"),
+        }
     except Exception as e:
         print(f"  - AI分析エラー: {e}")
-        return {"sentiment": "Error", "category": "Error"}
+        # エラー時は空の辞書を返さず、デフォルト値を持つ辞書を返す
+        return default_response
 
 def main():
-    """メイン処理"""
     print("--- プログラム開始 ---")
     
-    # 1. 既存のExcelファイルを読み込み、処理済みのURLリストを作成
     try:
         df_existing = pd.read_excel(EXCEL_FILE)
         existing_urls = set(df_existing['URL'])
@@ -192,13 +222,11 @@ def main():
         existing_urls = set()
         print("🔍 既存のExcelファイルが見つからないため、新規に作成します。")
 
-    # 2. Yahooニュースから基本情報を取得
     articles = get_yahoo_news_with_selenium(KEYWORD)
     if not articles:
-        print("⚠️ 新規記事が見つかりませんでした。プログラムを終了します。")
+        print("⚠️ 処理対象の記事が見つかりませんでした。プログラムを終了します。")
         return
 
-    # 3. 新規記事のみを抽出し、詳細情報を取得・分析
     new_articles_data = []
     for i, article in enumerate(articles):
         if article['URL'] in existing_urls:
@@ -206,52 +234,60 @@ def main():
         
         print(f"\n--- 新規記事の処理 ({i+1}/{len(articles)}): {article['タイトル']} ---")
         
-        # 詳細情報（本文とコメント）を取得
-        print("  - 本文を取得中...")
-        full_text = fetch_article_pages(article['URL'])
-        print(f"  - 本文を {len(full_text)} 文字取得しました。")
+        print("  - 本文をページごとに取得中...")
+        body_pages = fetch_article_pages(article['URL'])
+        print(f"  - 本文を {len(body_pages)} ページ分取得しました。")
         
-        print("  - コメントを取得中...")
-        comments = fetch_comments_with_selenium(article['URL'])
-        print(f"  - {len(comments)} 件のコメントを取得しました。")
+        print("  - コメントをページごとに取得中...")
+        comments_count, comment_pages = fetch_comments_with_selenium(article['URL'])
+        print(f"  - 合計 {comments_count} 件のコメントを {len(comment_pages)} ページ分取得しました。")
 
-        # AIによる分析
-        print("  - AIによる分析を実行中...")
-        title_analysis = analyze_text_with_ai(article['タイトル'])
-        body_analysis = analyze_text_with_ai(full_text)
+        ### 変更点 ###
+        # 1回のAPI呼び出しでタイトルと本文をまとめて分析
+        print("  - AIによる分析を実行中 (API消費量最適化版)...")
+        first_page_body = body_pages[0] if body_pages else ""
+        analysis = analyze_article_with_ai(article['タイトル'], first_page_body)
         
-        new_articles_data.append({
+        new_article_dict = {
             'タイトル': article['タイトル'],
             'URL': article['URL'],
             '投稿日': article['投稿日'],
             '引用元': article['引用元'],
-            '本文': full_text,
-            'コメント数': len(comments),
-            '閲覧者コメント': "\n---\n".join(comments), # コメントは改行で区切る
-            'タイトルからポジネガ判定': title_analysis.get('sentiment', 'N/A'),
-            'タイトルからカテゴリ分け': title_analysis.get('category', 'N/A'),
-            'ニュース記事本文からポジネガ判定': body_analysis.get('sentiment', 'N/A'),
-            'ニュース記事本文からカテゴリ分け': body_analysis.get('category', 'N/A'),
-        })
-        time.sleep(2) # APIへの連続アクセスを避ける
+            'コメント数': comments_count,
+            'タイトルからポジネガ判定': analysis.get('title_sentiment'),
+            'タイトルからカテゴリ分け': analysis.get('title_category'),
+            'ニュース記事本文からポジネガ判定': analysis.get('body_sentiment'),
+            'ニュース記事本文からカテゴリ分け': analysis.get('body_category'),
+        }
 
-    # 4. 新規データがあればExcelに追記して保存
+        for idx, page_content in enumerate(body_pages):
+            new_article_dict[f'本文({idx+1}ページ目)'] = page_content
+        
+        for idx, page_content in enumerate(comment_pages):
+            new_article_dict[f'閲覧者コメント({idx+1}ページ目)'] = page_content
+            
+        new_articles_data.append(new_article_dict)
+        # APIの連続アクセスを避けるための待機は、ループの最後に1回で十分
+        time.sleep(1)
+
     if new_articles_data:
         df_new = pd.DataFrame(new_articles_data)
         df_combined = pd.concat([df_existing, df_new], ignore_index=True)
         
-        # カラムの順序を定義
-        column_order = [
-            '投稿日', '引用元', 'タイトル', 'URL', 'コメント数', 
-            'タイトルからポジネガ判定', 'タイトルからカテゴリ分け', 
-            'ニュース記事本文からポジネガ判定', 'ニュース記事本文からカテゴリ分け', 
-            '本文', '閲覧者コメント'
+        static_columns = [
+            'タイトル', 'URL', '投稿日', '引用元', 'コメント数',
+            'タイトルからポジネガ判定', 'タイトルからカテゴリ分け',
+            'ニュース記事本文からポジネガ判定', 'ニュース記事本文からカテゴリ分け'
         ]
-        # 存在するカラムのみで順序を再定義
-        final_columns = [col for col in column_order if col in df_combined.columns]
-        df_combined = df_combined[final_columns]
         
-        df_combined.to_excel(EXCEL_FILE, index=False)
+        body_columns = sorted([col for col in df_combined.columns if col.startswith('本文(')])
+        comment_columns = sorted([col for col in df_combined.columns if col.startswith('閲覧者コメント(')])
+        
+        final_column_order = static_columns + body_columns + comment_columns
+        
+        final_df = df_combined[[col for col in final_column_order if col in df_combined.columns]]
+        
+        final_df.to_excel(EXCEL_FILE, index=False)
         print(f"\n✅ {len(new_articles_data)}件の新規記事を '{EXCEL_FILE}' に追記しました。")
     else:
         print("\n⚠️ 追記すべき新しい記事はありませんでした。")
