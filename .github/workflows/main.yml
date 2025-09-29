@@ -2,13 +2,17 @@ name: Run Yahoo News Scraper and Commit Excel
 
 on:
   schedule:
-    # JSTの毎時0分に実行 (UTCでは前日の15時, 16時...となるため、0 * * * * はJSTの毎時0分にほぼ相当)
+    # JSTの毎時0分に実行
     - cron: '0 * * * *'
   workflow_dispatch:
 
 jobs:
   scrape-and-commit:
     runs-on: ubuntu-latest
+
+    # ワークフローにリポジトリへの書き込み権限を付与
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout repository
@@ -33,7 +37,7 @@ jobs:
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
         git add nissan_yahoo_news.xlsx
-        # git diff-index --quiet HEAD || は変更があった場合のみコミットするためのコマンド
+        # git diff-index --quiet HEAD は変更があった場合のみコミットするためのコマンド
         if ! git diff-index --quiet HEAD; then
           git commit -m "Update Yahoo news articles"
           git push
