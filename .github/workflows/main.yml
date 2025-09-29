@@ -1,4 +1,3 @@
-
 name: Run News Scraper (Google & Yahoo)
 
 on:
@@ -13,6 +12,11 @@ on:
 jobs:
   scrape-news:
     runs-on: ubuntu-latest
+
+    # ▼▼▼ 変更点：ジョブにリポジトリへの書き込み権限を付与 ▼▼▼
+    permissions:
+      contents: write
+    # ▲▲▲ ここまで ▲▲▲
 
     steps:
     - name: Checkout repository
@@ -29,22 +33,17 @@ jobs:
         pip install -r requirements.txt
 
     - name: Run Scraper
-      # GCPのSecretは不要になったため削除
       run: |
         python main.py
 
     - name: Commit and push if changed
       run: |
-        # Gitのユーザー情報を設定
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        
-        # news_articles.xlsxファイルに変更があるか確認し、あればコミット＆プッシュ
-        # `|| exit 0` は変更がない場合にエラーで終了させないためのおまじない
         git add news_articles.xlsx || exit 0
         git commit -m "Update news articles" || exit 0
         git push
-        
+
     - name: Check for workflow failure (optional)
       if: ${{ failure() }}
       run: echo "Workflow failed. Check logs for details."
