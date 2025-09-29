@@ -1,18 +1,17 @@
-name: Run Yahoo News Scraper and Commit Excel
+name: Run News Scraper (Google & Yahoo)
 
 on:
   schedule:
-    # JSTで毎時0分（1時間おき）
+    # ✅ JSTで毎時0分（1時間おき）
     - cron: '0 * * * *'
+    # ✅ JSTで毎日15:00（→UTCでは06:00）
+    - cron: '0 6 * * *'
+
   workflow_dispatch:
 
 jobs:
-  scrape-and-commit:
+  scrape-news:
     runs-on: ubuntu-latest
-
-    # ワークフローにリポジトリへの書き込み権限を付与
-    permissions:
-      contents: write
 
     steps:
     - name: Checkout repository
@@ -29,18 +28,11 @@ jobs:
         pip install -r requirements.txt
 
     - name: Run Scraper
+      env:
+        GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
       run: |
         python main.py
 
-    - name: Commit and push if there are changes
-      run: |
-        git config --global user.name 'github-actions[bot]'
-        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-        git add yahoo_news_articles.xlsx
-        # 変更があった場合のみコミットする
-        if ! git diff-index --quiet HEAD; then
-          git commit -m "Update Yahoo news articles"
-          git push
-        else
-          echo "No changes to commit."
-        fi
+    - name: Check for workflow failure (optional)
+      if: ${{ failure() }}
+      run: echo "Workflow failed. Check logs for details."
