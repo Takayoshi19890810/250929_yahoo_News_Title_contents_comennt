@@ -1,0 +1,56 @@
+name: Yahoo News Scraper and Analyzer
+
+on:
+  workflow_dispatch: # 手動実行を許可
+  schedule:
+    # JSTで毎日午前9時に実行 (UTCでは00:00)
+    - cron: '0 0 * * *'
+
+permissions:
+  contents: write # リポジトリへの書き込み権限を付与
+
+jobs:
+  run-scraper:
+    name: Run Scraper and Analyzer
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Google Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget
+          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -f install -y
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run main script
+        env:
+          # GitHubリポジトリのSecretsに 'GEMINI_API_KEY' という名前でAPIキーを設定してください
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python main.py
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          # Excelファイルに変更があった場合のみコミット
+          git add ${{ env.EXCEL_FILE }}
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Update news data on $(date +'%Y-%m-%d')"
+            git push
+          fi
+        env:
+          EXCEL_FILE: yahoo_news_analysis.xlsx # スクリプト内のファイル名と合わせる
